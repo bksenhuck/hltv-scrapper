@@ -43,7 +43,12 @@ async def scrape_match_detail(page: Page, match: MatchResult) -> MatchDetail | N
 
     log.debug("Fetching match_id=%d  %s vs %s", match_id, match.team1.name, match.team2.name)
 
-    await page.goto(match.match_url, wait_until="domcontentloaded", timeout=PAGE_TIMEOUT_MS)
+    try:
+        await page.goto(match.match_url, wait_until="domcontentloaded", timeout=PAGE_TIMEOUT_MS)
+    except Exception as e:
+        log.warning("match_id=%d: page.goto failed (%s) — skipping", match_id, e)
+        return None
+
     try:
         await page.wait_for_selector(SEL_MAP_HOLDER, timeout=SELECTOR_TIMEOUT_MS)
     except Exception:
