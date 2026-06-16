@@ -34,7 +34,7 @@ from src.hltv_scraper.modules.results import fetch_page_html, parse_results, par
 from src.hltv_scraper.utils.browser import load_cookies, new_session, save_cookies, wait_for_cloudflare
 from src.hltv_scraper.utils.log import get_logger, setup_logging
 from src.hltv_scraper.utils.parsers import build_results_url, extract_match_id
-from src.hltv_scraper.utils.storage import append_to_parquets, load_saved_ids
+from src.hltv_scraper.utils.storage import append_to_parquets, clear_year, load_saved_ids
 
 log = get_logger(__name__)
 
@@ -49,8 +49,8 @@ async def _scrape_year(page, year: int) -> int:
 
     Returns the total number of newly collected matches.
     """
+    clear_year(year)
     saved_ids = load_saved_ids(year)
-    log.info("%d: %d matches already saved (resuming)", year, len(saved_ids))
 
     buffer: list[MatchDetail] = []
     total_new = 0

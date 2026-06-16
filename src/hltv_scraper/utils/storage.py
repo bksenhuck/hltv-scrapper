@@ -125,6 +125,16 @@ def _upsert(path: Path, new_df: pl.DataFrame, keys: list[str]) -> None:
     df.write_parquet(path, compression="zstd")
 
 
+def clear_year(year: int) -> None:
+    """Delete all three Parquet files for the given year (fresh start on next scrape)."""
+    folder = Path(DATA_DIR) / str(year)
+    for name in ("matches.parquet", "maps.parquet", "player_stats.parquet"):
+        path = folder / name
+        if path.exists():
+            path.unlink()
+            log.info("Deleted: %s", path)
+
+
 def load_saved_ids(year: int) -> set[int]:
     """Return all match_ids already present in matches.parquet for the given year.
 
