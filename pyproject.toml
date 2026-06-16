@@ -12,6 +12,8 @@ pydantic = ">=2.7.0"
 polars = ">=1.0.0"
 tqdm = ">=4.66.0"
 camoufox = {version = ">=0.4.0", extras = ["geoip"]}
+pyarrow = "^24.0.0"
+pandas = "^3.0.3"
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.0.0"

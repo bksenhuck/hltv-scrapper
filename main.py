@@ -1,5 +1,5 @@
 """
-HLTV scraper → data/datasets/{year}/{month:02d}.parquet
+HLTV scraper → data/datasets/{year}/{matches,maps,player_stats}.parquet
 
 Flow:
   For each year:
@@ -34,7 +34,7 @@ from src.hltv_scraper.modules.results import fetch_page_html, parse_results, par
 from src.hltv_scraper.utils.browser import load_cookies, new_session, save_cookies, wait_for_cloudflare
 from src.hltv_scraper.utils.log import get_logger, setup_logging
 from src.hltv_scraper.utils.parsers import build_results_url, extract_match_id
-from src.hltv_scraper.utils.storage import append_to_parquet, load_saved_ids
+from src.hltv_scraper.utils.storage import append_to_parquets, load_saved_ids
 
 log = get_logger(__name__)
 
@@ -106,7 +106,7 @@ async def _scrape_year(page, year: int) -> int:
                     total_new += 1
 
                     if len(buffer) >= SAVE_EVERY_N:
-                        append_to_parquet(buffer, year)
+                        append_to_parquets(buffer, year)
                         log.info("Checkpoint: %d matches saved (total new: %d)", len(buffer), total_new)
                         buffer.clear()
 
@@ -117,7 +117,7 @@ async def _scrape_year(page, year: int) -> int:
             page_bar.set_postfix({"total_new": total_new})
 
     if buffer:
-        append_to_parquet(buffer, year)
+        append_to_parquets(buffer, year)
         log.info("Final flush: %d matches saved", len(buffer))
 
     return total_new

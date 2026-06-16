@@ -72,3 +72,6 @@ DEBUG_MATCH_DIR    = "data/debug_match"
 DEBUG_RECENT_COUNT = 5   # most recent matches to sample
 DEBUG_OLDEST_COUNT = 5   # oldest matches to sample
 DEBUG_RANDOM_COUNT = 5   # random matches sampled from a middle page
+
+# Earliest year with HLTV data (used when iterating all years automatically)
+HLTV_START_YEAR = 2012

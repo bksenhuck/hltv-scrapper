@@ -1,10 +1,10 @@
 """
-ETL: data/datasets/{year}/{month}.parquet → hltv.db (SQLite)
+ETL: data/datasets/{year}/{matches,maps,player_stats}.parquet → hltv.db (SQLite)
 
 Tables:
   matches      — one row per match
-  maps         — one row per map played
-  player_stats — one row per player per map, per side ('both', 'ct', 't')
+  maps         — one row per map played (map_order 0 = All Maps aggregate)
+  player_stats — one row per player per map per side (both / ct / t)
 
 Usage:
   python etl.py                  # process all Parquet files in data/datasets/
@@ -12,7 +12,6 @@ Usage:
   python etl.py --reset          # drop and recreate the database before inserting
 """
 import argparse
-import json
 import sqlite3
 from pathlib import Path
 
@@ -43,105 +42,98 @@ CREATE TABLE IF NOT EXISTS maps (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     match_id    INTEGER NOT NULL REFERENCES matches(match_id),
     map_order   INTEGER NOT NULL,
-    name        TEXT    NOT NULL,
+    map_name    TEXT    NOT NULL,
     score_team1 INTEGER NOT NULL,
-    score_team2 INTEGER NOT NULL
+    score_team2 INTEGER NOT NULL,
+    UNIQUE(match_id, map_order)
 );
 
 CREATE TABLE IF NOT EXISTS player_stats (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    map_id      INTEGER NOT NULL REFERENCES maps(id),
-    team        INTEGER NOT NULL,              -- 1 or 2
-    side        TEXT    NOT NULL DEFAULT 'both',  -- 'both', 'ct', 't'
+    match_id    INTEGER NOT NULL REFERENCES matches(match_id),
+    map_order   INTEGER NOT NULL,
+    team        INTEGER NOT NULL,
+    side        TEXT    NOT NULL,
     player_name TEXT    NOT NULL,
     kills       INTEGER,
     deaths      INTEGER,
     adr         REAL,
     kast        REAL,
-    rating      REAL
+    rating      REAL,
+    UNIQUE(match_id, map_order, team, side, player_name)
 );
 
-CREATE INDEX IF NOT EXISTS idx_matches_year   ON matches(year);
-CREATE INDEX IF NOT EXISTS idx_matches_date   ON matches(date);
-CREATE INDEX IF NOT EXISTS idx_matches_team1  ON matches(team1);
-CREATE INDEX IF NOT EXISTS idx_matches_team2  ON matches(team2);
-CREATE INDEX IF NOT EXISTS idx_maps_match     ON maps(match_id);
-CREATE INDEX IF NOT EXISTS idx_stats_map      ON player_stats(map_id);
-CREATE INDEX IF NOT EXISTS idx_stats_player   ON player_stats(player_name);
-CREATE INDEX IF NOT EXISTS idx_stats_side     ON player_stats(side);
+CREATE INDEX IF NOT EXISTS idx_matches_year    ON matches(year);
+CREATE INDEX IF NOT EXISTS idx_matches_date    ON matches(date);
+CREATE INDEX IF NOT EXISTS idx_matches_team1   ON matches(team1);
+CREATE INDEX IF NOT EXISTS idx_matches_team2   ON matches(team2);
+CREATE INDEX IF NOT EXISTS idx_maps_match      ON maps(match_id);
+CREATE INDEX IF NOT EXISTS idx_stats_match     ON player_stats(match_id);
+CREATE INDEX IF NOT EXISTS idx_stats_map_order ON player_stats(map_order);
+CREATE INDEX IF NOT EXISTS idx_stats_player    ON player_stats(player_name);
+CREATE INDEX IF NOT EXISTS idx_stats_side      ON player_stats(side);
 """
 
 
-def _find_parquets(year: int | None) -> list[Path]:
-    base = Path(DATA_DIR)
-    pattern = f"{year}/*.parquet" if year else "**/*.parquet"
+def _load(base: Path, name: str, year: int | None) -> pl.DataFrame | None:
+    pattern = f"{year}/{name}" if year else f"**/{name}"
     files = sorted(base.glob(pattern))
-    if not files:
-        raise FileNotFoundError(f"No .parquet files found in {DATA_DIR}/ (pattern: {pattern})")
-    return files
+    return pl.concat([pl.read_parquet(f) for f in files]) if files else None
 
 
-def _insert(conn: sqlite3.Connection, df: pl.DataFrame) -> tuple[int, int, int]:
+def _insert(
+    conn: sqlite3.Connection,
+    matches_df: pl.DataFrame,
+    maps_df: pl.DataFrame | None,
+    stats_df: pl.DataFrame | None,
+) -> tuple[int, int, int]:
     matches_n = maps_n = stats_n = 0
 
-    for row in df.iter_rows(named=True):
+    for row in matches_df.iter_rows(named=True):
         try:
             conn.execute(
-                """
-                INSERT OR IGNORE INTO matches
-                    (match_id, date, year, month, match_time,
-                     team1, team2, score_team1, score_team2,
-                     event, stage, format, match_url)
-                VALUES (?,?,?,?,?, ?,?,?,?, ?,?,?,?)
-                """,
+                """INSERT OR IGNORE INTO matches
+                    (match_id,date,year,month,match_time,team1,team2,
+                     score_team1,score_team2,event,stage,format,match_url)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
-                    row["match_id"], row["date"], row["year"], row["month"], row.get("match_time"),
-                    row["team1"], row["team2"], row["score_team1"], row["score_team2"],
+                    row["match_id"], row["date"], row["year"], row["month"],
+                    row.get("match_time"), row["team1"], row["team2"],
+                    row["score_team1"], row["score_team2"],
                     row.get("event"), row.get("stage"), row.get("format"), row.get("match_url"),
                 ),
             )
-            if not conn.execute("SELECT changes()").fetchone()[0]:
-                continue  # already exists — skip maps and stats to avoid duplicates
-            matches_n += 1
-
-            maps_data = json.loads(row.get("maps_json") or "[]")
-            for mp in maps_data:
-                cur = conn.execute(
-                    """
-                    INSERT INTO maps (match_id, map_order, name, score_team1, score_team2)
-                    VALUES (?,?,?,?,?)
-                    """,
-                    (row["match_id"], mp["order"], mp["name"], mp["score_team1"], mp["score_team2"]),
-                )
-                map_id = cur.lastrowid
-                maps_n += 1
-
-                sides = [
-                    (1, "both", "players_team1"),
-                    (2, "both", "players_team2"),
-                    (1, "ct",   "players_team1_ct"),
-                    (2, "ct",   "players_team2_ct"),
-                    (1, "t",    "players_team1_t"),
-                    (2, "t",    "players_team2_t"),
-                ]
-                for team_num, side, key in sides:
-                    for p in mp.get(key, []):
-                        conn.execute(
-                            """
-                            INSERT INTO player_stats
-                                (map_id, team, side, player_name, kills, deaths, adr, kast, rating)
-                            VALUES (?,?,?,?,?,?,?,?,?)
-                            """,
-                            (
-                                map_id, team_num, side, p["name"],
-                                p.get("kills"), p.get("deaths"),
-                                p.get("adr"), p.get("kast"), p.get("rating"),
-                            ),
-                        )
-                        stats_n += 1
-
-        except (sqlite3.Error, json.JSONDecodeError) as e:
+            matches_n += conn.execute("SELECT changes()").fetchone()[0]
+        except sqlite3.Error as e:
             print(f"  Error match_id={row.get('match_id')}: {e}")
+
+    if maps_df is not None:
+        for row in maps_df.iter_rows(named=True):
+            try:
+                conn.execute(
+                    "INSERT OR IGNORE INTO maps (match_id,map_order,map_name,score_team1,score_team2) VALUES (?,?,?,?,?)",
+                    (row["match_id"], row["map_order"], row["map_name"], row["score_team1"], row["score_team2"]),
+                )
+                maps_n += conn.execute("SELECT changes()").fetchone()[0]
+            except sqlite3.Error as e:
+                print(f"  Error map match_id={row.get('match_id')}: {e}")
+
+    if stats_df is not None:
+        for row in stats_df.iter_rows(named=True):
+            try:
+                conn.execute(
+                    """INSERT OR IGNORE INTO player_stats
+                        (match_id,map_order,team,side,player_name,kills,deaths,adr,kast,rating)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        row["match_id"], row["map_order"], row["team"], row["side"],
+                        row["player_name"], row.get("kills"), row.get("deaths"),
+                        row.get("adr"), row.get("kast"), row.get("rating"),
+                    ),
+                )
+                stats_n += conn.execute("SELECT changes()").fetchone()[0]
+            except sqlite3.Error as e:
+                print(f"  Error stat match_id={row.get('match_id')}: {e}")
 
     return matches_n, maps_n, stats_n
 
@@ -158,23 +150,28 @@ def main():
         db_path.unlink()
         print(f"Database removed: {db_path}")
 
-    files = _find_parquets(args.year)
-    print(f"Parquet files: {len(files)}")
-    for f in files:
-        print(f"  {f}")
+    base = Path(DATA_DIR)
+    matches_df = _load(base, "matches.parquet", args.year)
+    if matches_df is None:
+        print(f"No matches.parquet found in {DATA_DIR}/")
+        return
 
-    df = pl.concat([pl.read_parquet(f) for f in files])
-    print(f"\nRows loaded: {len(df)}")
+    maps_df  = _load(base, "maps.parquet", args.year)
+    stats_df = _load(base, "player_stats.parquet", args.year)
+
+    print(f"Matches     : {len(matches_df)}")
+    print(f"Maps        : {len(maps_df) if maps_df is not None else 0}")
+    print(f"Player stats: {len(stats_df) if stats_df is not None else 0}")
 
     with sqlite3.connect(db_path) as conn:
         conn.executescript(DDL)
-        matches_n, maps_n, stats_n = _insert(conn, df)
+        matches_n, maps_n, stats_n = _insert(conn, matches_df, maps_df, stats_df)
         conn.commit()
 
     print(f"\nETL complete → {db_path}")
-    print(f"  Matches inserted    : {matches_n}")
-    print(f"  Maps inserted       : {maps_n}")
-    print(f"  Player stats        : {stats_n}")
+    print(f"  Matches inserted : {matches_n}")
+    print(f"  Maps inserted    : {maps_n}")
+    print(f"  Player stats     : {stats_n}")
 
 
 if __name__ == "__main__":

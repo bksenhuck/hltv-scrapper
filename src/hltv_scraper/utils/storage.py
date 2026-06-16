@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 import polars as pl
@@ -9,9 +8,13 @@ from .log import get_logger, log_call
 
 log = get_logger(__name__)
 
-# maps_json is stored as a JSON string to avoid 3-level nesting in Parquet.
-# The ETL unpacks it into the maps + player_stats tables in SQLite.
-_SCHEMA: dict = {
+# --- Parquet schemas -----------------------------------------------------------
+# Three files per year under data/datasets/{year}/
+#   matches.parquet      — one row per match
+#   maps.parquet         — one row per map played (map_order 0 = "All Maps" aggregate)
+#   player_stats.parquet — one row per player per map per side (both / ct / t)
+
+_MATCHES_SCHEMA: dict = {
     "match_id":    pl.Int64,
     "date":        pl.String,
     "year":        pl.Int32,
@@ -24,27 +27,34 @@ _SCHEMA: dict = {
     "event":       pl.String,
     "stage":       pl.String,
     "format":      pl.String,
-    "maps_json":   pl.String,
     "match_url":   pl.String,
 }
 
+_MAPS_SCHEMA: dict = {
+    "match_id":    pl.Int64,
+    "map_order":   pl.Int32,
+    "map_name":    pl.String,
+    "score_team1": pl.Int32,
+    "score_team2": pl.Int32,
+}
 
-def _to_row(m: MatchDetail) -> dict:
-    maps_data = [
-        {
-            "order": mp.order,
-            "name": mp.name,
-            "score_team1": mp.score_team1,
-            "score_team2": mp.score_team2,
-            "players_team1":    [p.model_dump() for p in mp.players_team1],
-            "players_team2":    [p.model_dump() for p in mp.players_team2],
-            "players_team1_ct": [p.model_dump() for p in mp.players_team1_ct],
-            "players_team2_ct": [p.model_dump() for p in mp.players_team2_ct],
-            "players_team1_t":  [p.model_dump() for p in mp.players_team1_t],
-            "players_team2_t":  [p.model_dump() for p in mp.players_team2_t],
-        }
-        for mp in m.maps
-    ]
+_STATS_SCHEMA: dict = {
+    "match_id":    pl.Int64,
+    "map_order":   pl.Int32,
+    "team":        pl.Int32,
+    "side":        pl.String,
+    "player_name": pl.String,
+    "kills":       pl.Int32,
+    "deaths":      pl.Int32,
+    "adr":         pl.Float64,
+    "kast":        pl.Float64,
+    "rating":      pl.Float64,
+}
+
+
+# --- Row builders -------------------------------------------------------------
+
+def _match_row(m: MatchDetail) -> dict:
     return {
         "match_id":    m.match_id,
         "date":        m.date.isoformat(),
@@ -58,81 +68,122 @@ def _to_row(m: MatchDetail) -> dict:
         "event":       m.event,
         "stage":       m.stage,
         "format":      m.format,
-        "maps_json":   json.dumps(maps_data, ensure_ascii=False),
         "match_url":   m.match_url,
     }
 
 
+def _map_rows(m: MatchDetail) -> list[dict]:
+    return [
+        {
+            "match_id":    m.match_id,
+            "map_order":   mp.order,
+            "map_name":    mp.name,
+            "score_team1": mp.score_team1,
+            "score_team2": mp.score_team2,
+        }
+        for mp in m.maps
+    ]
+
+
+def _stat_rows(m: MatchDetail) -> list[dict]:
+    rows = []
+    for mp in m.maps:
+        for team, side, players in [
+            (1, "both", mp.players_team1),
+            (2, "both", mp.players_team2),
+            (1, "ct",   mp.players_team1_ct),
+            (2, "ct",   mp.players_team2_ct),
+            (1, "t",    mp.players_team1_t),
+            (2, "t",    mp.players_team2_t),
+        ]:
+            for p in players:
+                rows.append({
+                    "match_id":    m.match_id,
+                    "map_order":   mp.order,
+                    "team":        team,
+                    "side":        side,
+                    "player_name": p.name,
+                    "kills":       p.kills,
+                    "deaths":      p.deaths,
+                    "adr":         p.adr,
+                    "kast":        p.kast,
+                    "rating":      p.rating,
+                })
+    return rows
+
+
+# --- Parquet I/O --------------------------------------------------------------
+
+def _upsert(path: Path, new_df: pl.DataFrame, keys: list[str]) -> None:
+    if new_df.is_empty():
+        return
+    if path.exists():
+        existing = pl.read_parquet(path)
+        df = pl.concat([existing, new_df]).unique(subset=keys, keep="last")
+    else:
+        df = new_df
+    df.write_parquet(path, compression="zstd")
+
+
 def load_saved_ids(year: int) -> set[int]:
-    """Return match_ids already saved WITH map data for the given year (used to resume scraping).
+    """Return all match_ids already present in matches.parquet for the given year.
 
-    Matches saved with empty maps_json ('[]') are excluded so they get re-scraped.
-    Matches with no mapholder on HLTV will naturally produce '[]' again — that is fine.
+    A match in matches.parquet was fully scraped (even if HLTV had no stats for it),
+    so it is not re-scraped on resume.
     """
-    folder = Path(DATA_DIR) / str(year)
-    files = list(folder.glob("*.parquet")) if folder.exists() else []
-    if not files:
+    path = Path(DATA_DIR) / str(year) / "matches.parquet"
+    if not path.exists():
         return set()
-    df = pl.concat([pl.read_parquet(f).select(["match_id", "maps_json"]) for f in files])
-    with_data = df.filter(
-        pl.col("maps_json").is_not_null() & (pl.col("maps_json") != "[]")
+    df = pl.read_parquet(path).select("match_id")
+    log.info("%d: %d match(es) already scraped", year, len(df))
+    return set(df["match_id"].to_list())
+
+
+def append_to_parquets(matches: list[MatchDetail], year: int) -> None:
+    """Upsert a batch of matches into the three Parquet files for the given year."""
+    folder = Path(DATA_DIR) / str(year)
+    folder.mkdir(parents=True, exist_ok=True)
+
+    match_rows = [_match_row(m) for m in matches]
+    map_rows   = [r for m in matches for r in _map_rows(m)]
+    stat_rows  = [r for m in matches for r in _stat_rows(m)]
+
+    _upsert(
+        folder / "matches.parquet",
+        pl.from_dicts(match_rows, schema_overrides=_MATCHES_SCHEMA),
+        ["match_id"],
     )
-    log.info(
-        "%d: %d/%d matches with map data (rest will be re-scraped)",
-        year, len(with_data), len(df),
+    if map_rows:
+        _upsert(
+            folder / "maps.parquet",
+            pl.from_dicts(map_rows, schema_overrides=_MAPS_SCHEMA),
+            ["match_id", "map_order"],
+        )
+    if stat_rows:
+        _upsert(
+            folder / "player_stats.parquet",
+            pl.from_dicts(stat_rows, schema_overrides=_STATS_SCHEMA),
+            ["match_id", "map_order", "team", "side", "player_name"],
+        )
+
+    log.debug(
+        "Parquets updated (year=%d): %d matches | %d maps | %d stat rows",
+        year, len(match_rows), len(map_rows), len(stat_rows),
     )
-    return set(with_data["match_id"].to_list())
 
 
-def append_to_parquet(matches: list[MatchDetail], year: int) -> None:
-    """
-    Upsert matches into the existing monthly Parquet files.
-    Reads the current month file, appends new rows (deduplicating by match_id), and rewrites.
-    """
-    by_month: dict[int, list[MatchDetail]] = {}
-    for m in matches:
-        by_month.setdefault(m.date.month, []).append(m)
+# --- Read helpers for notebooks / analysis ------------------------------------
 
-    for month, month_matches in sorted(by_month.items()):
-        folder = Path(DATA_DIR) / str(year)
-        folder.mkdir(parents=True, exist_ok=True)
-        path = folder / f"{month:02d}.parquet"
-
-        new_df = pl.from_dicts([_to_row(m) for m in month_matches], schema_overrides=_SCHEMA)
-
-        if path.exists():
-            existing = pl.read_parquet(path)
-            df = pl.concat([existing, new_df]).unique(subset=["match_id"], keep="last")
-        else:
-            df = new_df
-
-        df.write_parquet(path, compression="zstd")
-        log.debug("Parquet updated: %s  (%d rows total)", path, len(df))
+def load_all_matches() -> pl.LazyFrame:
+    """All matches across all years as a LazyFrame."""
+    return pl.scan_parquet(f"{DATA_DIR}/**/matches.parquet")
 
 
-@log_call
-def save_year_to_parquet(matches: list[MatchDetail], year: int) -> list[Path]:
-    """Save/overwrite matches grouped by month into data/datasets/{year}/{month:02d}.parquet."""
-    by_month: dict[int, list[MatchDetail]] = {}
-    for m in matches:
-        by_month.setdefault(m.date.month, []).append(m)
-
-    saved: list[Path] = []
-    for month, month_matches in sorted(by_month.items()):
-        folder = Path(DATA_DIR) / str(year)
-        folder.mkdir(parents=True, exist_ok=True)
-        path = folder / f"{month:02d}.parquet"
-
-        df = pl.from_dicts([_to_row(m) for m in month_matches], schema_overrides=_SCHEMA)
-        df.write_parquet(path, compression="zstd")
-        saved.append(path)
-        log.info("Saved: %s  (%d matches)", path, len(month_matches))
-
-    return saved
+def load_all_maps() -> pl.LazyFrame:
+    """All map results (incl. map_order=0 All Maps aggregate) as a LazyFrame."""
+    return pl.scan_parquet(f"{DATA_DIR}/**/maps.parquet")
 
 
-def load_all_parquets() -> pl.LazyFrame:
-    """Read all Parquet files under datasets/ as a unified LazyFrame."""
-    if not list(Path(DATA_DIR).glob("**/*.parquet")):
-        raise FileNotFoundError(f"No .parquet files found in {DATA_DIR}/")
-    return pl.scan_parquet(f"{DATA_DIR}/**/*.parquet")
+def load_all_player_stats() -> pl.LazyFrame:
+    """All player stats (both/ct/t sides) as a LazyFrame."""
+    return pl.scan_parquet(f"{DATA_DIR}/**/player_stats.parquet")
