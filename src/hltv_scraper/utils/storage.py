@@ -126,55 +126,118 @@ def _upsert(path: Path, new_df: pl.DataFrame, keys: list[str]) -> None:
 
 
 def clear_year(year: int) -> None:
-    """Delete all three Parquet files for the given year (fresh start on next scrape)."""
-    folder = Path(DATA_DIR) / str(year)
-    for name in ("matches.parquet", "maps.parquet", "player_stats.parquet"):
-        path = folder / name
-        if path.exists():
-            path.unlink()
-            log.info("Deleted: %s", path)
+    """Delete all three Parquet files for the given year."""
+    _delete_part(year, "matches.parquet")
+    _delete_part(year, "maps.parquet")
+    _delete_part(year, "player_stats.parquet")
 
+
+def clear_matches(year: int) -> None:
+    _delete_part(year, "matches.parquet")
+
+
+def clear_maps(year: int) -> None:
+    _delete_part(year, "maps.parquet")
+
+
+def clear_player_stats(year: int) -> None:
+    _delete_part(year, "player_stats.parquet")
+
+
+def _delete_part(year: int, filename: str) -> None:
+    path = Path(DATA_DIR) / str(year) / filename
+    if path.exists():
+        path.unlink()
+        log.info("Deleted: %s", path)
+
+
+# --- Load helpers for resume / reprocessing ----------------------------------
 
 def load_saved_ids(year: int) -> set[int]:
-    """Return all match_ids already present in matches.parquet for the given year.
-
-    A match in matches.parquet was fully scraped (even if HLTV had no stats for it),
-    so it is not re-scraped on resume.
-    """
+    """match_ids already in matches.parquet (used to skip on resume)."""
     path = Path(DATA_DIR) / str(year) / "matches.parquet"
     if not path.exists():
         return set()
     df = pl.read_parquet(path).select("match_id")
-    log.info("%d: %d match(es) already scraped", year, len(df))
+    log.info("%d: %d match(es) already in matches.parquet", year, len(df))
     return set(df["match_id"].to_list())
 
 
-def append_to_parquets(matches: list[MatchDetail], year: int) -> None:
-    """Upsert a batch of matches into the three Parquet files for the given year."""
+def load_saved_map_ids(year: int) -> set[int]:
+    """match_ids already in maps.parquet."""
+    path = Path(DATA_DIR) / str(year) / "maps.parquet"
+    if not path.exists():
+        return set()
+    return set(pl.read_parquet(path).select("match_id").unique()["match_id"].to_list())
+
+
+def load_saved_stat_ids(year: int) -> set[int]:
+    """match_ids already in player_stats.parquet."""
+    path = Path(DATA_DIR) / str(year) / "player_stats.parquet"
+    if not path.exists():
+        return set()
+    return set(pl.read_parquet(path).select("match_id").unique()["match_id"].to_list())
+
+
+def load_match_records(year: int) -> list[dict]:
+    """Return (match_id, match_url, score_team1, score_team2) dicts from matches.parquet."""
+    path = Path(DATA_DIR) / str(year) / "matches.parquet"
+    if not path.exists():
+        return []
+    cols = ["match_id", "match_url", "score_team1", "score_team2"]
+    return pl.read_parquet(path).select(cols).drop_nulls(subset=["match_url"]).to_dicts()
+
+
+# --- Per-part save functions --------------------------------------------------
+
+def save_matches(rows: list[dict], year: int) -> None:
+    if not rows:
+        return
+    folder = _year_folder(year)
+    _upsert(
+        folder / "matches.parquet",
+        pl.from_dicts(rows, schema_overrides=_MATCHES_SCHEMA),
+        ["match_id"],
+    )
+
+
+def save_maps(rows: list[dict], year: int) -> None:
+    if not rows:
+        return
+    folder = _year_folder(year)
+    _upsert(
+        folder / "maps.parquet",
+        pl.from_dicts(rows, schema_overrides=_MAPS_SCHEMA),
+        ["match_id", "map_order"],
+    )
+
+
+def save_player_stats(rows: list[dict], year: int) -> None:
+    if not rows:
+        return
+    folder = _year_folder(year)
+    _upsert(
+        folder / "player_stats.parquet",
+        pl.from_dicts(rows, schema_overrides=_STATS_SCHEMA),
+        ["match_id", "map_order", "team", "side", "player_name"],
+    )
+
+
+def _year_folder(year: int) -> Path:
     folder = Path(DATA_DIR) / str(year)
     folder.mkdir(parents=True, exist_ok=True)
+    return folder
 
+
+def append_to_parquets(matches: list[MatchDetail], year: int) -> None:
+    """Convenience wrapper: upsert a batch into all three Parquet files."""
     match_rows = [_match_row(m) for m in matches]
     map_rows   = [r for m in matches for r in _map_rows(m)]
     stat_rows  = [r for m in matches for r in _stat_rows(m)]
 
-    _upsert(
-        folder / "matches.parquet",
-        pl.from_dicts(match_rows, schema_overrides=_MATCHES_SCHEMA),
-        ["match_id"],
-    )
-    if map_rows:
-        _upsert(
-            folder / "maps.parquet",
-            pl.from_dicts(map_rows, schema_overrides=_MAPS_SCHEMA),
-            ["match_id", "map_order"],
-        )
-    if stat_rows:
-        _upsert(
-            folder / "player_stats.parquet",
-            pl.from_dicts(stat_rows, schema_overrides=_STATS_SCHEMA),
-            ["match_id", "map_order", "team", "side", "player_name"],
-        )
+    save_matches(match_rows, year)
+    save_maps(map_rows, year)
+    save_player_stats(stat_rows, year)
 
     log.debug(
         "Parquets updated (year=%d): %d matches | %d maps | %d stat rows",
