@@ -15,19 +15,21 @@ log = get_logger(__name__)
 #   player_stats.parquet — one row per player per map per side (both / ct / t)
 
 _MATCHES_SCHEMA: dict = {
-    "match_id":    pl.Int64,
-    "date":        pl.String,
-    "year":        pl.Int32,
-    "month":       pl.Int32,
-    "match_time":  pl.String,
-    "team1":       pl.String,
-    "team2":       pl.String,
-    "score_team1": pl.Int32,
-    "score_team2": pl.Int32,
-    "event":       pl.String,
-    "stage":       pl.String,
-    "format":      pl.String,
-    "match_url":   pl.String,
+    "match_id":     pl.Int64,
+    "date":         pl.String,
+    "year":         pl.Int32,
+    "month":        pl.Int32,
+    "match_time":   pl.String,
+    "team1":        pl.String,
+    "team2":        pl.String,
+    "score_team1":  pl.Int32,
+    "score_team2":  pl.Int32,
+    "event":        pl.String,
+    "stage":        pl.String,
+    "format":       pl.String,
+    "match_url":    pl.String,
+    "team1_lineup": pl.String,   # pipe-separated player nicks, e.g. "s1mple|NiKo|device|..."
+    "team2_lineup": pl.String,
 }
 
 _MAPS_SCHEMA: dict = {
@@ -119,7 +121,11 @@ def _upsert(path: Path, new_df: pl.DataFrame, keys: list[str]) -> None:
         return
     if path.exists():
         existing = pl.read_parquet(path)
-        df = pl.concat([existing, new_df]).unique(subset=keys, keep="last")
+        # add columns present in new_df but missing in existing (schema evolution)
+        for col, dtype in new_df.schema.items():
+            if col not in existing.columns:
+                existing = existing.with_columns(pl.lit(None).cast(dtype).alias(col))
+        df = pl.concat([existing.select(new_df.columns), new_df]).unique(subset=keys, keep="last")
     else:
         df = new_df
     df.write_parquet(path, compression="zstd")

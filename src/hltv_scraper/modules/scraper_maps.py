@@ -37,13 +37,11 @@ def parse_map_rows(
         if map_name.lower() in ("tba", ""):
             continue
         scores = holder.select(SEL_MAP_SCORE)
-        if len(scores) < 2:
-            continue
         try:
-            s1 = int(scores[0].get_text(strip=True))
-            s2 = int(scores[1].get_text(strip=True))
+            s1 = int(scores[0].get_text(strip=True)) if len(scores) >= 1 else 0
+            s2 = int(scores[1].get_text(strip=True)) if len(scores) >= 2 else 0
         except ValueError:
-            continue
+            s1, s2 = 0, 0
         rows.append({
             "match_id":    match_id,
             "map_order":   order,

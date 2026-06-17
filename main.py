@@ -18,13 +18,14 @@ Usage:
 import argparse
 import asyncio
 import logging
+import random
 from pathlib import Path
 
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
 from src.hltv_scraper.conf.settings import (
-    DATA_DIR, MATCH_REQUEST_DELAY, PAGE_SIZE, SAVE_EVERY_N, SITE_NAME,
+    DATA_DIR, MATCH_REQUEST_DELAY_MAX, MATCH_REQUEST_DELAY_MIN, PAGE_SIZE, SAVE_EVERY_N, SITE_NAME,
 )
 from src.hltv_scraper.modules.common import fetch_match_html
 from src.hltv_scraper.modules.results import fetch_page_html, parse_results, parse_total_pages
@@ -66,31 +67,8 @@ async def _iter_results_pages(page, year: int):
         offset += PAGE_SIZE
 
 
-async def _fetch_and_save(page, match_id: int, url: str, year: int,
-                          do_matches: bool, do_maps: bool, do_stats: bool,
-                          match_result=None) -> bool:
-    """Fetch one match page and save the requested parts. Returns True on success."""
-    await wait_for_cloudflare(page)
-    html = await fetch_match_html(page, url, match_id)
-    if html is None:
-        return False
-
-    if do_matches and match_result is not None:
-        save_matches([parse_match_row(html, match_result, match_id)], year)
-
-    if do_maps:
-        s1 = match_result.team1.score if match_result else 0
-        s2 = match_result.team2.score if match_result else 0
-        rows = parse_map_rows(html, match_id, s1, s2)
-        if rows:
-            save_maps(rows, year)
-
-    if do_stats:
-        rows = parse_stat_rows(html, match_id)
-        if rows:
-            save_player_stats(rows, year)
-
-    return True
+def _jitter() -> float:
+    return random.uniform(MATCH_REQUEST_DELAY_MIN, MATCH_REQUEST_DELAY_MAX)
 
 
 # ── run_all: single fetch per match, saves all 3 (default / most efficient) ───
@@ -128,7 +106,6 @@ async def run_all(page, year: int, force: bool) -> int:
                         continue
                     mbar.set_postfix({"id": match_id})
 
-                    await wait_for_cloudflare(page)
                     html = await fetch_match_html(page, match.match_url, match_id)
                     if html is None:
                         continue
@@ -147,7 +124,7 @@ async def run_all(page, year: int, force: bool) -> int:
                         log.info("Checkpoint: %d new matches saved", total_new)
                         buffer_m.clear(); buffer_mp.clear(); buffer_st.clear()
 
-                    await asyncio.sleep(MATCH_REQUEST_DELAY)
+                    await asyncio.sleep(_jitter())
 
             page_bar.update(1)
             page_bar.set_postfix({"total_new": total_new})
@@ -187,7 +164,6 @@ async def run_matches(page, year: int, force: bool) -> int:
                         continue
                     mbar.set_postfix({"id": match_id})
 
-                    await wait_for_cloudflare(page)
                     html = await fetch_match_html(page, match.match_url, match_id)
                     if html is None:
                         continue
@@ -201,7 +177,7 @@ async def run_matches(page, year: int, force: bool) -> int:
                         log.info("Checkpoint: %d matches saved", total_new)
                         buffer.clear()
 
-                    await asyncio.sleep(MATCH_REQUEST_DELAY)
+                    await asyncio.sleep(_jitter())
 
             page_bar.update(1)
 
@@ -230,7 +206,6 @@ async def run_maps(page, year: int, force: bool) -> int:
             match_id, url = rec["match_id"], rec["match_url"]
             mbar.set_postfix({"id": match_id})
 
-            await wait_for_cloudflare(page)
             html = await fetch_match_html(page, url, match_id)
             if html is None:
                 continue
@@ -244,7 +219,7 @@ async def run_maps(page, year: int, force: bool) -> int:
                 log.info("Checkpoint: %d matches processed (maps)", total_new)
                 buffer.clear()
 
-            await asyncio.sleep(MATCH_REQUEST_DELAY)
+            await asyncio.sleep(_jitter())
 
     save_maps(buffer, year)
     return total_new
@@ -271,7 +246,6 @@ async def run_player_stats(page, year: int, force: bool) -> int:
             match_id, url = rec["match_id"], rec["match_url"]
             mbar.set_postfix({"id": match_id})
 
-            await wait_for_cloudflare(page)
             html = await fetch_match_html(page, url, match_id)
             if html is None:
                 continue
@@ -285,7 +259,7 @@ async def run_player_stats(page, year: int, force: bool) -> int:
                 log.info("Checkpoint: %d matches processed (stats)", total_new)
                 buffer.clear()
 
-            await asyncio.sleep(MATCH_REQUEST_DELAY)
+            await asyncio.sleep(_jitter())
 
     save_player_stats(buffer, year)
     return total_new

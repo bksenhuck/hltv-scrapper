@@ -4,6 +4,8 @@ import re
 from bs4 import BeautifulSoup
 
 from ..conf.settings import (
+    SEL_LINEUP_PLAYER,
+    SEL_LINEUPS,
     SEL_MATCH_DATE,
     SEL_MATCH_EVENT,
     SEL_MATCH_FORMAT,
@@ -18,21 +20,36 @@ def parse_match_row(html: str, match: MatchResult, match_id: int) -> dict:
     soup = BeautifulSoup(html, "html.parser")
     match_time = _text(soup, SEL_MATCH_DATE) or _text(soup, SEL_MATCH_TIME)
     event = _text(soup, SEL_MATCH_EVENT) or match.event
+    t1_lineup, t2_lineup = _parse_lineups(soup)
     return {
-        "match_id":    match_id,
-        "date":        match.date.isoformat(),
-        "year":        match.date.year,
-        "month":       match.date.month,
-        "match_time":  match_time,
-        "team1":       match.team1.name,
-        "team2":       match.team2.name,
-        "score_team1": match.team1.score,
-        "score_team2": match.team2.score,
-        "event":       event,
-        "stage":       _parse_stage(soup),
-        "format":      _parse_format(soup),
-        "match_url":   match.match_url,
+        "match_id":      match_id,
+        "date":          match.date.isoformat(),
+        "year":          match.date.year,
+        "month":         match.date.month,
+        "match_time":    match_time,
+        "team1":         match.team1.name,
+        "team2":         match.team2.name,
+        "score_team1":   match.team1.score,
+        "score_team2":   match.team2.score,
+        "event":         event,
+        "stage":         _parse_stage(soup),
+        "format":        _parse_format(soup),
+        "match_url":     match.match_url,
+        "team1_lineup":  t1_lineup,
+        "team2_lineup":  t2_lineup,
     }
+
+
+def _parse_lineups(soup: BeautifulSoup) -> tuple[str | None, str | None]:
+    """Return (team1_lineup, team2_lineup) as pipe-separated player nicks, or None if absent."""
+    lineups = soup.select(SEL_LINEUPS)
+    if len(lineups) < 2:
+        return None, None
+    results = []
+    for lineup in lineups[:2]:
+        names = [el.get_text(strip=True) for el in lineup.select(SEL_LINEUP_PLAYER)]
+        results.append("|".join(names) if names else None)
+    return results[0], results[1]
 
 
 def _text(soup: BeautifulSoup, selector: str) -> str | None:

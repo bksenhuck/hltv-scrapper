@@ -2,23 +2,30 @@
 from bs4 import BeautifulSoup, Tag
 from playwright.async_api import Page
 
-from ..conf.settings import PAGE_TIMEOUT_MS, SEL_MAP_HOLDER, SEL_MATCH_STATS, SELECTOR_TIMEOUT_MS
+from ..conf.settings import PAGE_TIMEOUT_MS, SEL_MATCH_STATS
+from ..utils.browser import wait_for_cloudflare
 from ..utils.log import get_logger
 
 log = get_logger(__name__)
 
 
 async def fetch_match_html(page: Page, url: str, match_id: int) -> str | None:
-    """Navigate to a match page and return its HTML, or None on timeout/error."""
+    """Navigate to a match page and return its HTML, or None on timeout/error.
+
+    Cloudflare check happens here (after goto) so callers do not need to check
+    before every request — avoiding an extra page.content() read per match.
+    """
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=PAGE_TIMEOUT_MS)
     except Exception as e:
         log.warning("match_id=%d: page.goto failed (%s) — skipping", match_id, e)
         return None
-    try:
-        await page.wait_for_selector(SEL_MAP_HOLDER, timeout=SELECTOR_TIMEOUT_MS)
-    except Exception:
-        log.debug("match_id=%d: no mapholder found (walkover or old match)", match_id)
+
+    # handle Cloudflare challenge that may have intercepted this specific request
+    await wait_for_cloudflare(page)
+
+    # HLTV is server-side rendered — content is ready after domcontentloaded,
+    # no need to wait for a specific selector (saves ~5s per match without stats)
     return await page.content()
 
 

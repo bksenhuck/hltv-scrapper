@@ -12,7 +12,7 @@ USER_AGENT = (
 # Browser
 BROWSER_HEADLESS = True
 PAGE_TIMEOUT_MS = 30_000
-SELECTOR_TIMEOUT_MS = 15_000
+SELECTOR_TIMEOUT_MS = 5_000
 
 # CSS selectors — results list page
 SEL_RESULTS_HOLDER  = ".results-all"
@@ -33,6 +33,10 @@ SEL_MATCH_TIME      = ".timeAndEvent .time"
 SEL_MATCH_EVENT     = ".timeAndEvent .text-ellipsis"
 SEL_MATCH_STAGE     = ".timeAndEvent .preposition + a"   # e.g. "Quarter-Final"
 SEL_MATCH_FORMAT    = ".veto-box .standard-box"          # contains "Best of X"
+
+# CSS selectors — match detail page (lineups)
+SEL_LINEUPS       = ".lineups .lineup"           # two elements: team1, team2
+SEL_LINEUP_PLAYER = ".flagAlign .text-ellipsis"  # player nick inside each lineup
 
 # CSS selectors — match detail page (maps)
 SEL_MAP_HOLDER      = ".mapholder"
@@ -59,7 +63,9 @@ COOKIES_FILE    = "hltv_cookies.json"
 BROWSER_CHANNEL = "chrome"
 
 # Delay between individual match page requests (seconds)
-MATCH_REQUEST_DELAY = 1.5
+# Delay between match page requests — randomised in this range to avoid rate-limiting
+MATCH_REQUEST_DELAY_MIN = 0.3
+MATCH_REQUEST_DELAY_MAX = 0.8
 
 # Flush buffer to Parquet every N matches to avoid losing progress on crash
 SAVE_EVERY_N = 5
