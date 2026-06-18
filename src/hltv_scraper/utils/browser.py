@@ -52,32 +52,28 @@ async def save_cookies(page: Page) -> None:
     log.debug("Cookies saved: %s (%d)", COOKIES_FILE, len(cookies))
 
 
-async def _is_cloudflare(page: Page) -> bool:
-    try:
-        title = (await page.title()).lower()
-        snippet = (await page.content())[:3000].lower()
-        return any(m in title or m in snippet for m in _CLOUDFLARE_MARKERS)
-    except Exception:
-        return False
+def is_cloudflare_html(html: str) -> bool:
+    """Check a pre-fetched HTML string for Cloudflare challenge markers."""
+    snippet = html[:3000].lower()
+    return any(m in snippet for m in _CLOUDFLARE_MARKERS)
 
 
 async def wait_for_cloudflare(page: Page) -> None:
-    """Block until the Cloudflare challenge disappears."""
-    while await _is_cloudflare(page):
-        log.warning(
-            "Cloudflare detected!\n"
-            "  1. In the open browser, click 'Verify you are human' / checkbox\n"
-            "  2. Wait for HLTV to load\n"
-            "  3. Then press Enter here"
-        )
-        try:
-            input("\n  [WAITING] Press Enter after HLTV loads in the browser... ")
-        except EOFError:
-            return
-
+    """Used only for the initial HLTV page load. Polls until challenge disappears."""
+    try:
+        title = (await page.title()).lower()
+        html  = await page.content()
+    except Exception:
+        return
+    if not (any(m in title for m in _CLOUDFLARE_MARKERS) or is_cloudflare_html(html)):
+        return
+    log.warning("Cloudflare challenge detected — waiting for it to resolve in the browser...")
+    while True:
         await asyncio.sleep(2)
-
-        if await _is_cloudflare(page):
-            log.warning("Challenge still active — repeat the process in the browser.")
-        else:
-            log.info("Cloudflare resolved!")
+        try:
+            html = await page.content()
+        except Exception:
+            return
+        if not is_cloudflare_html(html):
+            break
+    log.info("Cloudflare resolved!")
