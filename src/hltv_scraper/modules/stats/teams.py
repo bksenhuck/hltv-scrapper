@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 from bs4 import BeautifulSoup, Tag
 
 from ...conf.settings import (
+    HLTV_CURRENT_YEAR,
     HLTV_START_YEAR,
     SEL_STATS_TABLE,
     STATS_CS_VERSIONS,
@@ -19,15 +20,14 @@ from ...utils.log import get_logger
 log = get_logger(__name__)
 
 _ALL = "all"
-_CURRENT_YEAR = 2026
 
 
 def get_all_combinations() -> list[tuple]:
     """Return every (year, match_type, map_name, cs_version) tuple to scrape.
 
-    year is either the string "all" (All time) or an int (2012–_CURRENT_YEAR).
+    year is either the string "all" (All time) or an int (HLTV_START_YEAR–HLTV_CURRENT_YEAR).
     """
-    years = [_ALL] + list(range(HLTV_START_YEAR, _CURRENT_YEAR + 1))
+    years = [_ALL] + list(range(HLTV_START_YEAR, HLTV_CURRENT_YEAR + 1))
     return list(product(years, STATS_MATCH_TYPES, STATS_MAPS, STATS_CS_VERSIONS))
 
 

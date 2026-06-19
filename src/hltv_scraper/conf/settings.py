@@ -81,6 +81,7 @@ DEBUG_RANDOM_COUNT = 5   # random matches sampled from a middle page
 
 # Earliest year with HLTV data (used when iterating all years automatically)
 HLTV_START_YEAR = 2012
+HLTV_CURRENT_YEAR = 2026
 
 # ── Team stats page ────────────────────────────────────────────────────────────
 STATS_TEAMS_URL = f"{HLTV_BASE_URL}/stats/teams"
