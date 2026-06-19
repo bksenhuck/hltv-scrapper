@@ -1,207 +1,116 @@
 # modules/
 
-Scraping logic, split into independent units that share common primitives.
+Scraping logic split into three sub-packages: `results/`, `stats/`, and `overview/`.
 
 ---
 
-## Overview
+## results/
+
+Parses match data from HLTV results pages and individual match pages.
 
 ```
-modules/
-  common.py           shared: browser fetch + low-level HTML helpers
-  results.py          results-list pages (pagination, match rows)
-  scraper_matches.py  parse match header info from a match page
-  scraper_maps.py     parse per-map names and scores from a match page
-  scraper_stats.py    parse per-player stats from a match page
+results/
+  page.py          fetch and parse results-list pages (pagination + match rows)
+  matches.py       parse match header (time, event, stage, format)
+  maps.py          parse per-map names and scores
+  player_stats.py  parse per-player stats per map per side
 ```
 
-The three `scraper_*.py` modules are **independent of each other** and all receive the same raw HTML string from `common.fetch_match_html`. They can be called individually in `main.py` for partial reprocessing without re-scraping everything.
+The three parsers (`matches`, `maps`, `player_stats`) all receive the **same HTML string** fetched once per match. They are independent — any subset can run via `--parts` in `main.py`.
 
----
+### page.py
 
-## common.py
+**`fetch_page_html(page, url) -> str | None`**  
+Loads a results page and waits for the results container. Saves `debug_page.html` on failure.
 
-Shared primitives used by all three scraper modules.
+**`parse_total_pages(html) -> int | None`**  
+Reads `.pagination-data` to estimate the number of pages for the year.
 
-### `fetch_match_html(page, url, match_id) -> str | None`
-
-Navigates to a match page with Playwright and returns the full HTML.  
-Returns `None` on timeout or navigation error (the caller skips the match and continues).
-
+**`parse_results(html) -> list[MatchResult]`**  
+Extracts match rows from `.results-sublist` blocks:
 ```
-page.goto(url, wait_until="domcontentloaded", timeout=PAGE_TIMEOUT_MS)
-page.wait_for_selector(".mapholder", timeout=SELECTOR_TIMEOUT_MS)   ← optional, non-fatal
-return page.content()
-```
-
-### `get_stats_sections(soup) -> list[Tag]`
-
-Finds all direct-child `.stats-content` divs inside `.matchstats`.
-
-```
-.matchstats
-  └── .stats-content   ← sections[0]: "All Maps" aggregate
-  └── .stats-content   ← sections[1]: map 1
-  └── .stats-content   ← sections[2]: map 2
-  ...
+.results-sublist
+  .standard-headline   ← date heading
+  .result-con a        ← one anchor per match (team names, scores, event, URL)
 ```
 
-Both `scraper_maps.py` and `scraper_stats.py` call this to locate the stats block.
+### matches.py
 
-### Parse helpers
-
-| Function | Input | Output |
-|---|---|---|
-| `trad_cell(cells)` | list of `Tag` | the cell with class `traditional-data` (non-eco-adjusted) |
-| `parse_kd(cells)` | list of `td.kd` cells | `(kills, deaths)` parsed from `"46-23"` |
-| `float_cell(el)` | single `Tag` | `float` or `None` |
-| `float_pct(el)` | single `Tag` | strips `%` and returns float (e.g. `72.7%` → `72.7`) |
-
----
-
-## results.py
-
-Handles the HLTV results-list pages.
-
-### `fetch_page_html(page, url) -> str | None`
-
-Loads a results page, dismisses consent banners, and waits for the results container. Falls back through several CSS selectors and a string search before giving up. Saves `debug_page.html` on failure.
-
-### `parse_total_pages(html) -> int | None`
-
-Reads `.pagination-data` to estimate the number of pages for the year.  
-Supports `data-total`, `data-pages`, and text formats like `"1-100 of 3847"`.
-
-### `parse_results(html) -> list[MatchResult]`
-
-Extracts `MatchResult` objects from a results page:
-
-```
-.results-sublist          ← one block per date
-  .standard-headline      ← date heading (parsed by utils/parsers.py)
-  .result-con a.a-reset   ← one anchor per match
-    .team × 2             ← team names
-    .result-score span × 2 ← final scores (maps won)
-    .event-name           ← event name
-```
-
-Each `MatchResult` contains the full match URL, which is the key used to deduplicate on resume.
-
----
-
-## scraper_matches.py
-
-### `parse_match_row(html, match, match_id) -> dict`
-
-Parses match-level header fields from the individual match page HTML. Also receives the `MatchResult` from the results page (used as fallback for team names, scores, event name).
-
-**Selectors used:**
+**`parse_match_row(html, match, match_id) -> dict`**  
+Parses match-level header fields. Falls back to the `MatchResult` values from the results page for missing fields.
 
 | Field | Selector |
 |---|---|
-| `match_time` | `.timeAndEvent .date` then `.timeAndEvent .time` |
-| `event` | `.timeAndEvent .text-ellipsis` (falls back to results-page value) |
-| `stage` | `.timeAndEvent .preposition + a`, or regex on `.timeAndEvent` text |
-| `format` | `.veto-box .standard-box` text, regex `Best of N` |
+| `match_time` | `.timeAndEvent .date` / `.timeAndEvent .time` |
+| `event` | `.timeAndEvent .text-ellipsis` |
+| `stage` | `.timeAndEvent .preposition + a` |
+| `format` | `.veto-box .standard-box`, regex `Best of N` |
 
-**Returns** one dict matching the `matches.parquet` schema:
+### maps.py
 
-```python
-{
-  "match_id", "date", "year", "month", "match_time",
-  "team1", "team2", "score_team1", "score_team2",
-  "event", "stage", "format", "match_url"
-}
-```
+**`parse_map_rows(html, match_id, s1, s2) -> list[dict]`**  
+Parses `.mapholder` elements. Generates a `map_order=0` "All Maps" aggregate row only when `.matchstats > .stats-content` exists (i.e. HLTV has stats for the match).
 
-**Does not parse** maps or player stats — those are handled by the other two modules.
+### player_stats.py
 
----
+**`parse_stat_rows(html, match_id) -> list[dict]`**  
+Iterates `.stats-content` sections. Each section contains six tables: `totalstats`, `ctstats`, `tstats` for team 1 then team 2.
 
-## scraper_maps.py
-
-### `parse_map_rows(html, match_id, series_score_t1, series_score_t2) -> list[dict]`
-
-Parses map names and per-map scores from `.mapholder` elements. Also generates a `map_order=0` "All Maps" aggregate row using the series scores passed as arguments.
-
-**HTML structure parsed:**
-
-```
-.mapholder (× N, one per map)
-  .mapname          ← map name (skipped if "TBA" or empty)
-  .results-team-score × 2  ← round scores for this map
-```
-
-The "All Maps" aggregate (`map_order=0`) is generated only when `.matchstats > .stats-content` exists, confirming that HLTV has stats data for this match. Matches without any stats block produce an empty list.
-
-**Returns** list of dicts matching the `maps.parquet` schema:
-
-```python
-{"match_id", "map_order", "map_name", "score_team1", "score_team2"}
-```
-
-**map_order alignment:** `map_order=1` in maps.parquet corresponds to `sections[1]` in `scraper_stats.py` (both skip the index-0 "All Maps" slot).
+| Stat | Selector |
+|---|---|
+| `player_name` | `.player-nick` |
+| `kills`, `deaths` | `td.kd` (`traditional-data` cell) |
+| `adr` | `td.adr` (`traditional-data` cell) |
+| `kast` | `td.kast` (strips `%`) |
+| `rating` | `td.rating` |
 
 ---
 
-## scraper_stats.py
+## stats/
 
-### `parse_stat_rows(html, match_id) -> list[dict]`
-
-Parses player stats from all `.stats-content` sections. Iterates with `enumerate(get_stats_sections(...))` so `map_order` matches directly: index 0 → All Maps, index 1 → map 1, etc.
-
-**HTML structure per `.stats-content` section:**
+Scrapes the HLTV stats overview pages (`/stats/teams`, `/stats/players`) across all filter combinations.
 
 ```
-.stats-content
-  table.totalstats × 2    ← team1, team2 — "both" side
-  table.ctstats × 2       ← team1, team2 — CT side (may have class "hidden")
-  table.tstats × 2        ← team1, team2 — T side  (may have class "hidden")
+stats/
+  teams.py    URL builder, combination generator, table parser for /stats/teams
+  players.py  URL builder, combination generator, table parser for /stats/players
 ```
 
-Each table has a `tbody` with one `tr` per player. For each player row:
+Both modules share the same structure:
 
-| Stat | Selector | Notes |
-|---|---|---|
-| `player_name` | `.player-nick` | |
-| `kills`, `deaths` | `td.kd` | format `"46-23"`, picks `traditional-data` cell |
-| `adr` | `td.adr` | picks `traditional-data` cell |
-| `kast` | `td.kast` | picks `traditional-data` cell, strips `%` |
-| `rating` | `td.rating` | direct cell (not `.rating2`) |
+| Function | Purpose |
+|---|---|
+| `get_all_combinations()` | Returns every `(year, match_type, map, cs_version[, ranking])` tuple |
+| `build_*_stats_url(...)` | Assembles the HLTV URL for a given combination |
+| `combo_key(...)` | Returns a stable string key used in `progress.json` |
+| `parse_*_stats_table(html, ...)` | Parses the `table.stats-table` and returns a list of row dicts |
 
-**Returns** list of dicts matching the `player_stats.parquet` schema:
+**Dimensions per scrape:** 16 years × 6 match types × 14 maps × 3 CS versions = **4 032 combinations**.
 
-```python
-{
-  "match_id", "map_order", "team",      # 1 or 2
-  "side",                                # "both" | "ct" | "t"
-  "player_name", "kills", "deaths",
-  "adr", "kast", "rating"
-}
-```
+Output schema — `teams.py`: `year`, `match_type`, `map_name`, `cs_version`, `rank`, `team_id`, `team_name`, `country`, `maps_played`, `kd_diff`, `kd_ratio`, `rating`, `scraped_at`
 
-Old matches (pre-2016 roughly) have ADR and KAST as `None`/`0.0` — HLTV did not track those metrics then.
+Output schema — `players.py`: same + `ranking_filter`, `player_id`, `player_name` (replaces `team_name` at rank position), `team_id`, `team_name`
 
 ---
 
-## Data flow
+## overview/
+
+Checks dataset completeness: compares the theoretical combination set against what is stored locally.
 
 ```
-results.py
-  parse_results(html) → list[MatchResult]
-        │
-        │  (for each new match_id)
-        ▼
-common.py
-  fetch_match_html(page, url, match_id) → html
-        │
-        ├──► scraper_matches.parse_match_row(html, match, match_id)  → dict
-        ├──► scraper_maps.parse_map_rows(html, match_id, s1, s2)     → list[dict]
-        └──► scraper_stats.parse_stat_rows(html, match_id)           → list[dict]
-                                                │
-                                                ▼
-                                    storage.save_matches / save_maps / save_player_stats
-                                    → data/datasets/{year}/*.parquet
+overview/
+  checker.py   DatasetOverview / YearSummary dataclasses + check_dataset() + format_report()
 ```
 
-In `run_all` (default in `main.py`) all three parsers receive the **same HTML** fetched once per match. When `--parts` is used, only the relevant parser runs and only its Parquet file is updated.
+### checker.py
+
+**`check_dataset(name, data_dir, parquet_name, all_combos, key_fn, year_fn) -> DatasetOverview`**  
+Generic checker. Loads `progress.json`, groups combos by year, and for each year reports:
+- `expected` / `done` / `gap` combo counts
+- `missing` combo keys (for re-scraping)
+- whether the parquet file exists and how many rows it has
+
+**`format_report(overview) -> list[str]`**  
+Returns a formatted text table ready to print or write to file.
+
+Consumed by `scripts/overview.py`, which runs both team and player datasets and saves results to `data/debug_overview/`.

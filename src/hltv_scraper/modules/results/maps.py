@@ -1,8 +1,8 @@
 """Parse map-level data (map names, per-map scores) from a match page HTML."""
 from bs4 import BeautifulSoup
 
-from ..conf.settings import SEL_MAP_HOLDER, SEL_MAP_NAME, SEL_MAP_SCORE
-from .common import get_stats_sections
+from ...conf.settings import SEL_MAP_HOLDER, SEL_MAP_NAME, SEL_MAP_SCORE
+from ...utils.html import get_stats_sections
 
 
 def parse_map_rows(

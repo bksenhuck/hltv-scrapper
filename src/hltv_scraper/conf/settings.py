@@ -71,7 +71,7 @@ MATCH_REQUEST_DELAY_MAX = 0.8
 SAVE_EVERY_N = 5
 
 # Output directory for scraped data
-DATA_DIR = "data/datasets"
+DATA_DIR = "data/datasets/results"
 
 # Debug HTML sampling — paths and per-category counts for debug_sample_matches.py
 DEBUG_MATCH_DIR    = "data/debug_match"
@@ -81,3 +81,48 @@ DEBUG_RANDOM_COUNT = 5   # random matches sampled from a middle page
 
 # Earliest year with HLTV data (used when iterating all years automatically)
 HLTV_START_YEAR = 2012
+
+# ── Team stats page ────────────────────────────────────────────────────────────
+STATS_TEAMS_URL = f"{HLTV_BASE_URL}/stats/teams"
+
+# Filter dimensions (empty string = "All" / default)
+STATS_MATCH_TYPES = ["", "Majors", "BigEvents", "MvpEvents", "Lan", "Online"]
+STATS_MAPS = [
+    "",               # All maps
+    "de_ancient",
+    "de_anubis",
+    "de_dust2",
+    "de_inferno",
+    "de_mirage",
+    "de_nuke",
+    "de_overpass",
+    "de_cache",
+    "de_cobblestone",
+    "de_season",
+    "de_train",
+    "de_tuscan",
+    "de_vertigo",
+]
+STATS_CS_VERSIONS = ["", "CS2", "CSGO"]   # "" = Both
+
+# CSS selectors — team stats table
+SEL_STATS_TABLE       = "table.stats-table"
+SEL_STATS_TEAM_CELL   = "td.teamCol-teams-overview"
+SEL_STATS_RATING_CELL = "td.ratingCol"
+
+# Output
+STATS_TEAMS_DATA_DIR = "data/datasets/team_stats"
+STATS_TEAMS_PARQUET  = "team_stats.parquet"
+STATS_TEAMS_PROGRESS = "progress.json"
+STATS_SAVE_EVERY     = 50   # flush to Parquet every N combinations
+
+# ── Player stats page ──────────────────────────────────────────────────────────
+STATS_PLAYERS_URL = f"{HLTV_BASE_URL}/stats/players"
+
+# Opponent ranking filter — empty string = "All" (no filter)
+STATS_RANKING_FILTERS = ["All"]  # extend with Top5/Top10/Top20/Top50/Top100 if needed
+
+# Output
+STATS_PLAYERS_DATA_DIR = "data/datasets/player_stats"
+STATS_PLAYERS_PARQUET  = "player_stats.parquet"
+STATS_PLAYERS_PROGRESS = "progress.json"

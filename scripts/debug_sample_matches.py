@@ -26,7 +26,8 @@ from src.hltv_scraper.conf.settings import (
     PAGE_SIZE,
     PAGE_TIMEOUT_MS,
 )
-from src.hltv_scraper.modules.results import fetch_page_html, parse_results, parse_total_pages
+from src.hltv_scraper.modules.results.page import fetch_page_html, parse_results
+from src.hltv_scraper.utils.parsers import parse_total_pages
 from src.hltv_scraper.utils.browser import load_cookies, new_session, save_cookies, wait_for_cloudflare
 from src.hltv_scraper.utils.parsers import build_results_url, extract_match_id
 

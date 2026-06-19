@@ -27,11 +27,12 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 from src.hltv_scraper.conf.settings import (
     DATA_DIR, MATCH_REQUEST_DELAY_MAX, MATCH_REQUEST_DELAY_MIN, PAGE_SIZE, SAVE_EVERY_N, SITE_NAME,
 )
-from src.hltv_scraper.modules.common import fetch_match_html
-from src.hltv_scraper.modules.results import fetch_page_html, parse_results, parse_total_pages
-from src.hltv_scraper.modules.scraper_maps import parse_map_rows
-from src.hltv_scraper.modules.scraper_matches import parse_match_row
-from src.hltv_scraper.modules.scraper_stats import parse_stat_rows
+from src.hltv_scraper.modules.results.maps import parse_map_rows
+from src.hltv_scraper.modules.results.matches import parse_match_row
+from src.hltv_scraper.modules.results.page import fetch_page_html, parse_results
+from src.hltv_scraper.modules.results.player_stats import parse_stat_rows
+from src.hltv_scraper.utils.browser import fetch_match_html
+from src.hltv_scraper.utils.parsers import parse_total_pages
 from src.hltv_scraper.utils.browser import load_cookies, new_session, save_cookies, wait_for_cloudflare
 from src.hltv_scraper.utils.log import get_logger, setup_logging
 from src.hltv_scraper.utils.parsers import build_results_url, extract_match_id
@@ -52,8 +53,15 @@ async def _iter_results_pages(page, year: int):
     total_pages: int | None = None
     while True:
         url = build_results_url(year=year, offset=offset)
-        html = await fetch_page_html(page, url)
+        html = None
+        for attempt in range(3):
+            html = await fetch_page_html(page, url)
+            if html:
+                break
+            log.warning("Results page fetch failed (attempt %d/3): %s", attempt + 1, url)
+            await asyncio.sleep(5)
         if not html:
+            log.error("Skipping results page after 3 failed attempts: %s", url)
             break
         if offset == 0 and total_pages is None:
             total_pages = parse_total_pages(html)

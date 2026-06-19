@@ -1,14 +1,14 @@
 """Parse player stats (kills, deaths, ADR, KAST, rating) from a match page HTML."""
 from bs4 import BeautifulSoup, Tag
 
-from ..conf.settings import (
+from ...conf.settings import (
     SEL_PLAYER_NICK,
     SEL_STAT_ADR,
     SEL_STAT_KD,
     SEL_STAT_KAST,
     SEL_STAT_RATING,
 )
-from .common import float_cell, float_pct, get_stats_sections, parse_kd, trad_cell
+from ...utils.html import float_cell, float_pct, get_stats_sections, parse_kd, trad_cell
 
 
 def parse_stat_rows(html: str, match_id: int) -> list[dict]:

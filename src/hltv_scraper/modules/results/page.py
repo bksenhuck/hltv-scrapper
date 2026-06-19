@@ -1,18 +1,17 @@
-import math
+"""Fetch and parse the HLTV /results list page."""
 import re
 from datetime import date
 
 from bs4 import BeautifulSoup
 from playwright.async_api import Page, async_playwright
 
-from ..conf.settings import (
+from ...conf.settings import (
     BROWSER_HEADLESS,
     HLTV_BASE_URL,
     PAGE_SIZE,
     PAGE_TIMEOUT_MS,
     SEL_DATE_HEADING,
     SEL_EVENT,
-    SEL_PAGINATION_DATA,
     SEL_RESULT_ROW,
     SEL_RESULTS_HOLDER,
     SEL_RESULTS_SUBLIST,
@@ -21,10 +20,10 @@ from ..conf.settings import (
     SELECTOR_TIMEOUT_MS,
     USER_AGENT,
 )
-from ..models import MatchResult, TeamResult
-from ..utils.browser import wait_for_cloudflare
-from ..utils.log import get_logger, log_call
-from ..utils.parsers import build_results_url, parse_date
+from ...models import MatchResult, TeamResult
+from ...utils.browser import wait_for_cloudflare
+from ...utils.log import get_logger, log_call
+from ...utils.parsers import build_results_url, parse_date
 
 log = get_logger(__name__)
 
@@ -47,12 +46,16 @@ _CONSENT_SELECTORS = [
 
 @log_call
 async def fetch_page_html(page: Page, url: str, debug_dump: bool = False) -> str | None:
-    """
-    Load the URL, dismiss any consent banner, and wait for results content.
+    """Load the URL, dismiss any consent banner, and wait for results content.
+
     Saves debug_page.html on failure for inspection.
     """
     log.info("Fetching: %s", url)
-    await page.goto(url, wait_until="domcontentloaded", timeout=PAGE_TIMEOUT_MS)
+    try:
+        await page.goto(url, wait_until="domcontentloaded", timeout=PAGE_TIMEOUT_MS)
+    except Exception as e:
+        log.warning("page.goto timeout/error for %s: %s", url, e)
+        return None
     await wait_for_cloudflare(page)
 
     # dismiss cookie/consent banner if present
@@ -92,37 +95,6 @@ async def fetch_page_html(page: Page, url: str, debug_dump: bool = False) -> str
     dump = Path("debug_page.html")
     dump.write_text(html, encoding="utf-8")
     log.warning("No results selector found. HTML saved to: %s", dump)
-    return None
-
-
-def parse_total_pages(html: str) -> int | None:
-    """
-    Read .pagination-data to determine the total number of pages for the year.
-    Expected text formats: '1-100 of 3847' or data-total='3847'.
-    """
-    soup = BeautifulSoup(html, "html.parser")
-    el = soup.select_one(SEL_PAGINATION_DATA)
-    if not el:
-        return None
-
-    raw = el.get("data-total") or el.get("data-pages")
-    if raw:
-        try:
-            return math.ceil(int(raw) / PAGE_SIZE)
-        except ValueError:
-            pass
-
-    text = el.get_text(strip=True)
-    m = re.search(r"of\s+([\d,]+)", text, re.IGNORECASE)
-    if m:
-        total = int(m.group(1).replace(",", ""))
-        return math.ceil(total / PAGE_SIZE)
-
-    m = re.search(r"([\d,]+)", text)
-    if m:
-        total = int(m.group(1).replace(",", ""))
-        return math.ceil(total / PAGE_SIZE)
-
     return None
 
 

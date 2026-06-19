@@ -3,7 +3,7 @@ import re
 
 from bs4 import BeautifulSoup
 
-from ..conf.settings import (
+from ...conf.settings import (
     SEL_LINEUP_PLAYER,
     SEL_LINEUPS,
     SEL_MATCH_DATE,
@@ -12,7 +12,7 @@ from ..conf.settings import (
     SEL_MATCH_STAGE,
     SEL_MATCH_TIME,
 )
-from ..models import MatchResult
+from ...models import MatchResult
 
 
 def parse_match_row(html: str, match: MatchResult, match_id: int) -> dict:
